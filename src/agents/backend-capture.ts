@@ -6,10 +6,13 @@ const CODEX_BACKEND_CAPTURE_INPUT_ENV_VAR = "CODEX_BACKEND_CAPTURE_INPUT";
 const CODEX_BACKEND_CAPTURE_OUTPUT_ENV_VAR = "CODEX_BACKEND_CAPTURE_OUTPUT";
 const CODEX_BACKEND_CAPTURE_REASONING_ENV_VAR = "CODEX_BACKEND_CAPTURE_REASONING";
 const CODEX_BACKEND_CAPTURE_DIR_ENV_VAR = "CODEX_BACKEND_CAPTURE_DIR";
+const CODEX_PROMPT_DEBUG_ENV_VAR = "CODEX_PROMPT_DEBUG";
+const CODEX_PROMPT_DEBUG_DIR_ENV_VAR = "CODEX_PROMPT_DEBUG_DIR";
 const BACKEND_TRAFFIC_FILENAME = "backend_traffic.ndjson";
 
 let captureCounter = 1;
 let trafficEventCounter = 1;
+let captureConfigAnnounced = false;
 
 type BackendCaptureConfig = {
   enabled: boolean;
@@ -38,11 +41,13 @@ function envIsSet(name: string): boolean {
 }
 
 function activeBackendCaptureConfig(): BackendCaptureConfig {
+  const promptDebugEnabled = envIsSet(CODEX_PROMPT_DEBUG_ENV_VAR);
   const enabled =
     envIsSet(CODEX_BACKEND_CAPTURE_ENV_VAR) ||
     envIsSet(CODEX_BACKEND_CAPTURE_INPUT_ENV_VAR) ||
     envIsSet(CODEX_BACKEND_CAPTURE_OUTPUT_ENV_VAR) ||
-    envIsSet(CODEX_BACKEND_CAPTURE_REASONING_ENV_VAR);
+    envIsSet(CODEX_BACKEND_CAPTURE_REASONING_ENV_VAR) ||
+    promptDebugEnabled;
   return {
     enabled,
     captureInput: enabled || envIsSet(CODEX_BACKEND_CAPTURE_INPUT_ENV_VAR),
@@ -50,6 +55,7 @@ function activeBackendCaptureConfig(): BackendCaptureConfig {
     captureReasoning: enabled || envIsSet(CODEX_BACKEND_CAPTURE_REASONING_ENV_VAR),
     captureDir:
       process.env[CODEX_BACKEND_CAPTURE_DIR_ENV_VAR]?.trim() ||
+      process.env[CODEX_PROMPT_DEBUG_DIR_ENV_VAR]?.trim() ||
       `/var/tmp/codex-backend-capture.${process.pid}`,
   };
 }
@@ -85,6 +91,14 @@ export function startBackendCapture(
   const config = activeBackendCaptureConfig();
   if (!config.enabled) {
     return undefined;
+  }
+
+  if (!captureConfigAnnounced) {
+    captureConfigAnnounced = true;
+    // Use stderr so operators can immediately find capture output directories in live logs.
+    console.error(
+      `[backend-capture] enabled dir=${config.captureDir} input=${String(config.captureInput)} output=${String(config.captureOutput)} reasoning=${String(config.captureReasoning)}`,
+    );
   }
 
   const id = nextCaptureId();

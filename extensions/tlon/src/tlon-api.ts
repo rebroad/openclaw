@@ -1,10 +1,35 @@
 import crypto from "node:crypto";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/text-runtime";
 import { authenticate } from "./urbit/auth.js";
 import { scryUrbitPath } from "./urbit/channel-ops.js";
 import { ssrfPolicyFromDangerouslyAllowPrivateNetwork } from "./urbit/context.js";
+
+type AwsS3Module = typeof import("@aws-sdk/client-s3");
+type AwsS3PresignerModule = typeof import("@aws-sdk/s3-request-presigner");
+
+let awsS3ModulesPromise: Promise<{
+  s3: AwsS3Module;
+  presigner: AwsS3PresignerModule;
+} | null> | null = null;
+
+async function loadAwsS3Modules(): Promise<{ s3: AwsS3Module; presigner: AwsS3PresignerModule }> {
+  if (!awsS3ModulesPromise) {
+    awsS3ModulesPromise = Promise.all([
+      import("@aws-sdk/client-s3"),
+      import("@aws-sdk/s3-request-presigner"),
+    ])
+      .then(([s3, presigner]) => ({ s3, presigner }))
+      .catch(() => null);
+  }
+
+  const modules = await awsS3ModulesPromise;
+  if (!modules) {
+    throw new Error(
+      "Missing optional tlon S3 runtime dependencies (@aws-sdk/client-s3, @aws-sdk/s3-request-presigner).",
+    );
+  }
+  return modules;
+}
 
 type ClientConfig = {
   shipUrl: string;
@@ -251,9 +276,10 @@ export async function uploadFile(params: UploadFileParams): Promise<UploadResult
   if (!hasCustomS3Creds(credentials)) {
     throw new Error("No storage credentials configured");
   }
+  const { s3, presigner } = await loadAwsS3Modules();
 
   const endpoint = new URL(prefixEndpoint(credentials.endpoint));
-  const client = new S3Client({
+  const client = new s3.S3Client({
     endpoint: {
       protocol: endpoint.protocol.slice(0, -1) as "http" | "https",
       hostname: endpoint.host,
@@ -273,7 +299,7 @@ export async function uploadFile(params: UploadFileParams): Promise<UploadResult
     "x-amz-acl": "public-read",
   };
 
-  const command = new PutObjectCommand({
+  const command = new s3.PutObjectCommand({
     Bucket: storageConfig.currentBucket,
     Key: fileKey,
     ContentType: headers["Content-Type"],
@@ -281,7 +307,7 @@ export async function uploadFile(params: UploadFileParams): Promise<UploadResult
     ACL: "public-read",
   });
 
-  const signedUrl = await getSignedUrl(client, command, {
+  const signedUrl = await presigner.getSignedUrl(client, command, {
     expiresIn: 3600,
     signableHeaders: new Set(Object.keys(headers)),
   });

@@ -1,5 +1,45 @@
-import { scot, da } from "@urbit/aura";
 import { markdownToStory, createImageBlock, isImageUrl, type Story } from "./story.js";
+
+type AuraModule = {
+  scot: (mark: string, value: bigint) => string;
+  da: {
+    fromUnix: (unixMs: number) => bigint;
+  };
+};
+
+let auraModulePromise: Promise<AuraModule | null> | null = null;
+
+async function loadAuraModule(): Promise<AuraModule | null> {
+  if (auraModulePromise) {
+    return auraModulePromise;
+  }
+  auraModulePromise = import("@urbit/aura")
+    .then((module) => module as AuraModule)
+    .catch(() => null);
+  return auraModulePromise;
+}
+
+function formatUdFallback(value: bigint): string {
+  const digits = value.toString(10);
+  const dotted = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return `@${dotted}`;
+}
+
+async function formatUd(value: bigint): Promise<string> {
+  const aura = await loadAuraModule();
+  if (aura) {
+    return aura.scot("ud", value);
+  }
+  return formatUdFallback(value);
+}
+
+async function formatUdFromUnixMs(unixMs: number): Promise<string> {
+  const aura = await loadAuraModule();
+  if (aura) {
+    return aura.scot("ud", aura.da.fromUnix(unixMs));
+  }
+  return formatUd(BigInt(unixMs));
+}
 
 export type TlonPokeApi = {
   poke: (params: { app: string; mark: string; json: unknown }) => Promise<unknown>;
@@ -26,7 +66,7 @@ export async function sendDm({ api, fromShip, toShip, text }: SendTextParams) {
 
 export async function sendDmWithStory({ api, fromShip, toShip, story }: SendStoryParams) {
   const sentAt = Date.now();
-  const idUd = scot("ud", da.fromUnix(sentAt));
+  const idUd = await formatUdFromUnixMs(sentAt);
   const id = `${fromShip}/${idUd}`;
 
   const delta = {
@@ -100,7 +140,7 @@ export async function sendGroupMessageWithStory({
   if (replyToId && /^\d+$/.test(replyToId)) {
     try {
       // scot('ud', n) formats a number as @ud with dots
-      formattedReplyId = scot("ud", BigInt(replyToId));
+      formattedReplyId = await formatUd(BigInt(replyToId));
     } catch {
       // Fall back to raw ID if formatting fails
     }

@@ -622,7 +622,21 @@ function resolvePluginModuleExport(moduleExport: unknown): {
 
 function resolveSetupChannelRegistration(moduleExport: unknown): {
   plugin?: ChannelPlugin;
+  error?: string;
 } {
+  const resolveChannelPluginCandidate = (candidate: unknown): ChannelPlugin | undefined => {
+    const normalized =
+      candidate &&
+      typeof candidate === "object" &&
+      "default" in (candidate as Record<string, unknown>)
+        ? (candidate as { default: unknown }).default
+        : candidate;
+    if (normalized && typeof normalized === "object") {
+      return normalized as ChannelPlugin;
+    }
+    return undefined;
+  };
+
   const resolved =
     moduleExport &&
     typeof moduleExport === "object" &&
@@ -634,13 +648,44 @@ function resolveSetupChannelRegistration(moduleExport: unknown): {
   }
   const setup = resolved as {
     plugin?: unknown;
+    kind?: unknown;
+    loadSetupPlugin?: unknown;
   };
-  if (!setup.plugin || typeof setup.plugin !== "object") {
-    return {};
+
+  // Legacy setup entry shape: { plugin: ChannelPlugin }
+  const legacyPlugin = resolveChannelPluginCandidate(setup.plugin);
+  if (legacyPlugin) {
+    return {
+      plugin: legacyPlugin,
+    };
   }
-  return {
-    plugin: setup.plugin as ChannelPlugin,
-  };
+
+  // Current setup entry contract from defineBundledChannelSetupEntry()
+  if (setup.kind === "bundled-channel-setup-entry") {
+    if (typeof setup.loadSetupPlugin !== "function") {
+      return {
+        error: "setup entry missing loadSetupPlugin()",
+      };
+    }
+    try {
+      const loaded = (setup.loadSetupPlugin as () => unknown)();
+      const loadedPlugin = resolveChannelPluginCandidate(loaded);
+      if (loadedPlugin) {
+        return {
+          plugin: loadedPlugin,
+        };
+      }
+      return {
+        error: "setup entry loadSetupPlugin() did not return a plugin object",
+      };
+    } catch (error) {
+      return {
+        error: `setup entry loadSetupPlugin() failed: ${String(error)}`,
+      };
+    }
+  }
+
+  return {};
 }
 
 function shouldLoadChannelPluginInSetupRuntime(params: {
@@ -1622,6 +1667,10 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
           api.registerChannel(setupRegistration.plugin);
           registry.plugins.push(record);
           seenIds.set(pluginId, candidate.origin);
+          continue;
+        }
+        if (setupRegistration.error) {
+          pushPluginLoadError(setupRegistration.error);
           continue;
         }
       }
