@@ -7,6 +7,7 @@ import {
   isProfileInCooldown,
   resolveProfilesUnavailableReason,
 } from "../../auth-profiles.js";
+import { startBackendCapture } from "../../backend-capture.js";
 import { FailoverError, resolveFailoverStatus } from "../../failover-error.js";
 import { shouldAllowCooldownProbeForReason } from "../../failover-policy.js";
 import { getApiKeyForModel, type ResolvedProviderAuth } from "../../model-auth.js";
@@ -296,6 +297,33 @@ export function createEmbeddedRunAuthController(params: {
       message,
       profileIds: params.profileCandidates,
     });
+    const capture = startBackendCapture({
+      kind: "auth_profile_preflight",
+      requestPayload: {
+        provider,
+        model: modelId,
+        allInCooldown: failoverParams.allInCooldown,
+        profileCandidates: params.profileCandidates,
+      },
+      trafficRequest: {
+        direction: "request_blocked",
+        transport: "auth_profile_preflight",
+        provider,
+        model: modelId,
+        all_in_cooldown: failoverParams.allInCooldown,
+        reason,
+        payload: message,
+      },
+    });
+    capture?.appendOutput(
+      "auth_profile_preflight_error",
+      JSON.stringify({
+        reason,
+        message,
+        provider,
+        model: modelId,
+      }),
+    );
     if (params.fallbackConfigured) {
       throw new FailoverError(message, {
         reason,

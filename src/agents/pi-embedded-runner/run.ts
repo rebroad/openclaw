@@ -22,6 +22,7 @@ import {
   markAuthProfileGood,
   markAuthProfileUsed,
 } from "../auth-profiles.js";
+import { startBackendCapture } from "../backend-capture.js";
 import {
   resolveSessionKeyForRequest,
   resolveStoredSessionKeyForSessionId,
@@ -256,6 +257,37 @@ export async function runEmbeddedPiAgent(
       provider = hookSelection.provider;
       modelId = hookSelection.modelId;
       const legacyBeforeAgentStartResult = hookSelection.legacyBeforeAgentStartResult;
+      const runCapture = startBackendCapture({
+        kind: "embedded_run",
+        requestPayload: {
+          runId: params.runId,
+          sessionId: params.sessionId,
+          sessionKey: params.sessionKey,
+          provider,
+          modelId,
+          trigger: params.trigger ?? "manual",
+          prompt: params.prompt,
+        },
+        trafficRequest: {
+          direction: "request",
+          transport: "embedded_run",
+          run_id: params.runId,
+          session_id: params.sessionId,
+          session_key: params.sessionKey,
+          provider,
+          model: modelId,
+          trigger: params.trigger ?? "manual",
+          payload: params.prompt,
+        },
+      });
+      runCapture?.appendOutput(
+        "embedded_run_metadata",
+        JSON.stringify({
+          runId: params.runId,
+          provider,
+          modelId,
+        }),
+      );
 
       const { model, error, authStorage, modelRegistry } = await resolveModelAsync(
         provider,

@@ -40,6 +40,7 @@ import {
   normalizeAssistantPhase,
 } from "../shared/chat-message-content.js";
 import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
+import { startBackendCapture } from "./backend-capture.js";
 import { resolveOpenAIStrictToolSetting } from "./openai-tool-schema.js";
 import {
   getOpenAIWebSocketErrorDetails,
@@ -647,6 +648,30 @@ export function createOpenAIWebSocketStreamFn(
 
     const run = async () => {
       const transport = resolveWsTransport(options);
+      const capture = startBackendCapture({
+        kind: "openai_ws",
+        requestPayload: {
+          sessionId,
+          transport,
+          provider: model.provider,
+          api: model.api,
+          model: model.id,
+          messages: context.messages,
+          tools: context.tools,
+        },
+        trafficRequest: {
+          direction: "request",
+          transport: "openai_ws",
+          session_id: sessionId,
+          provider: model.provider,
+          api: model.api,
+          model: model.id,
+          payload: {
+            messages: context.messages,
+            tools: context.tools,
+          },
+        },
+      });
       if (transport === "sse") {
         return fallbackToHttp(model, context, options, apiKey, eventStream, opts.signal);
       }
@@ -858,6 +883,15 @@ export function createOpenAIWebSocketStreamFn(
           turnState?.metadata,
         );
         const requestPayload = payload as Parameters<OpenAIWebSocketManager["send"]>[0];
+        capture?.appendTrafficEvent({
+          direction: "request_send",
+          transport: "openai_ws",
+          session_id: sessionId,
+          provider: model.provider,
+          api: model.api,
+          model: model.id,
+          payload: requestPayload,
+        });
 
         try {
           session.manager.send(requestPayload);
@@ -1020,6 +1054,15 @@ export function createOpenAIWebSocketStreamFn(
             };
 
             const unsubscribe = session.manager.onMessage((event) => {
+              capture?.appendTrafficEvent({
+                direction: "response_event",
+                transport: "openai_ws",
+                session_id: sessionId,
+                provider: model.provider,
+                api: model.api,
+                model: model.id,
+                payload: event,
+              });
               if (
                 event.type === "response.output_item.added" ||
                 event.type === "response.output_item.done" ||
@@ -1059,6 +1102,7 @@ export function createOpenAIWebSocketStreamFn(
               }
 
               if (event.type === "response.output_text.delta") {
+                capture?.appendOutput("openai_ws_output", event.delta);
                 const key = getOutputTextKey(event.item_id, event.content_index);
                 const nextText = `${outputTextByPart.get(key) ?? ""}${event.delta}`;
                 outputTextByPart.set(key, nextText);
@@ -1072,6 +1116,9 @@ export function createOpenAIWebSocketStreamFn(
               }
 
               if (event.type === "response.output_text.done") {
+                if (event.text) {
+                  capture?.appendOutput("openai_ws_output", event.text);
+                }
                 const key = getOutputTextKey(event.item_id, event.content_index);
                 if (event.text && event.text !== outputTextByPart.get(key)) {
                   outputTextByPart.set(key, event.text);
@@ -1096,11 +1143,13 @@ export function createOpenAIWebSocketStreamFn(
                   provider: model.provider,
                   id: model.id,
                 });
+                capture?.appendOutput("openai_ws_completed", JSON.stringify(event.response));
                 const reason: Extract<StopReason, "stop" | "length" | "toolUse"> =
                   assistantMsg.stopReason === "toolUse" ? "toolUse" : "stop";
                 eventStream.push({ type: "done", reason, message: assistantMsg });
                 resolve();
               } else if (event.type === "response.failed") {
+                capture?.appendOutput("openai_ws_failed", JSON.stringify(event.response));
                 outputItemPhaseById.clear();
                 outputTextByPart.clear();
                 emittedTextByPart.clear();
@@ -1115,6 +1164,7 @@ export function createOpenAIWebSocketStreamFn(
                   ),
                 );
               } else if (event.type === "error") {
+                capture?.appendOutput("openai_ws_error", JSON.stringify(event));
                 outputItemPhaseById.clear();
                 outputTextByPart.clear();
                 emittedTextByPart.clear();
@@ -1134,6 +1184,16 @@ export function createOpenAIWebSocketStreamFn(
           return;
         } catch (wsRunErr) {
           const normalizedErr = normalizeWsRunError(wsRunErr);
+          capture?.appendTrafficEvent({
+            direction: "response_error",
+            transport: "openai_ws",
+            session_id: sessionId,
+            provider: model.provider,
+            api: model.api,
+            model: model.id,
+            message: normalizedErr.message,
+            retryable: normalizedErr.retryable,
+          });
           if (
             transport !== "websocket" &&
             !signal?.aborted &&

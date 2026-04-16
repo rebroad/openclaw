@@ -35,24 +35,42 @@ export type BackendCaptureSession = {
   appendTrafficEvent: (event: Record<string, unknown>) => void;
 };
 
-function envIsSet(name: string): boolean {
+function parseEnvToggle(name: string): boolean | undefined {
   const value = process.env[name];
-  return typeof value === "string" && value.length > 0;
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized.length === 0) {
+    return undefined;
+  }
+  if (
+    normalized === "0" ||
+    normalized === "false" ||
+    normalized === "off" ||
+    normalized === "no" ||
+    normalized === "disable" ||
+    normalized === "disabled"
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function activeBackendCaptureConfig(): BackendCaptureConfig {
-  const promptDebugEnabled = envIsSet(CODEX_PROMPT_DEBUG_ENV_VAR);
-  const enabled =
-    envIsSet(CODEX_BACKEND_CAPTURE_ENV_VAR) ||
-    envIsSet(CODEX_BACKEND_CAPTURE_INPUT_ENV_VAR) ||
-    envIsSet(CODEX_BACKEND_CAPTURE_OUTPUT_ENV_VAR) ||
-    envIsSet(CODEX_BACKEND_CAPTURE_REASONING_ENV_VAR) ||
-    promptDebugEnabled;
+  const globalCaptureToggle =
+    parseEnvToggle(CODEX_BACKEND_CAPTURE_ENV_VAR) ?? parseEnvToggle(CODEX_PROMPT_DEBUG_ENV_VAR);
+  const defaultEnabled = globalCaptureToggle ?? true;
+  const captureInput = parseEnvToggle(CODEX_BACKEND_CAPTURE_INPUT_ENV_VAR) ?? defaultEnabled;
+  const captureOutput = parseEnvToggle(CODEX_BACKEND_CAPTURE_OUTPUT_ENV_VAR) ?? defaultEnabled;
+  const captureReasoning =
+    parseEnvToggle(CODEX_BACKEND_CAPTURE_REASONING_ENV_VAR) ?? defaultEnabled;
+  const enabled = captureInput || captureOutput || captureReasoning;
   return {
     enabled,
-    captureInput: enabled || envIsSet(CODEX_BACKEND_CAPTURE_INPUT_ENV_VAR),
-    captureOutput: enabled || envIsSet(CODEX_BACKEND_CAPTURE_OUTPUT_ENV_VAR),
-    captureReasoning: enabled || envIsSet(CODEX_BACKEND_CAPTURE_REASONING_ENV_VAR),
+    captureInput,
+    captureOutput,
+    captureReasoning,
     captureDir:
       process.env[CODEX_BACKEND_CAPTURE_DIR_ENV_VAR]?.trim() ||
       process.env[CODEX_PROMPT_DEBUG_DIR_ENV_VAR]?.trim() ||

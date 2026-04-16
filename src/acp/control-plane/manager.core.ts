@@ -1,3 +1,4 @@
+import { startBackendCapture } from "../../agents/backend-capture.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { logVerbose } from "../../globals.js";
@@ -736,6 +737,7 @@ export class AcpSessionManager {
           let sawTurnOutput = false;
           let retryFreshHandle = false;
           let skipPostTurnCleanup = false;
+          let capture: ReturnType<typeof startBackendCapture> | undefined;
           try {
             const ensured = await this.ensureRuntimeHandle({
               cfg: input.cfg,
@@ -782,6 +784,28 @@ export class AcpSessionManager {
               input.signal && typeof AbortSignal.any === "function"
                 ? AbortSignal.any([input.signal, internalAbortController.signal])
                 : internalAbortController.signal;
+            capture = startBackendCapture({
+              kind: "acp_runtime",
+              requestPayload: {
+                sessionKey,
+                backend: handle?.backend,
+                runtimeSessionName: handle.runtimeSessionName,
+                requestId: input.requestId,
+                mode: input.mode,
+                text: input.text,
+                attachments: input.attachments ?? [],
+              },
+              trafficRequest: {
+                direction: "request",
+                transport: "acp_runtime",
+                backend: handle?.backend,
+                session_key: sessionKey,
+                runtime_session_name: handle.runtimeSessionName,
+                request_id: input.requestId,
+                mode: input.mode,
+                payload: input.text,
+              },
+            });
             const eventGate = { open: true };
             const turnPromise = (async () => {
               for await (const event of runtime.runTurn({
@@ -794,6 +818,25 @@ export class AcpSessionManager {
               })) {
                 if (!eventGate.open) {
                   continue;
+                }
+                capture?.appendTrafficEvent({
+                  direction: "response_event",
+                  transport: "acp_runtime",
+                  backend: handle?.backend,
+                  session_key: sessionKey,
+                  request_id: input.requestId,
+                  payload: event,
+                });
+                if (event.type === "text_delta") {
+                  if (event.stream === "thought") {
+                    capture?.appendReasoning("acp_runtime_thought", event.text);
+                  } else {
+                    capture?.appendOutput("acp_runtime_output", event.text);
+                  }
+                } else if (event.type === "status" || event.type === "tool_call") {
+                  capture?.appendOutput("acp_runtime_event", JSON.stringify(event));
+                } else if (event.type === "error") {
+                  capture?.appendOutput("acp_runtime_error", JSON.stringify(event));
                 }
                 if (event.type === "error") {
                   streamError = new AcpRuntimeError(
@@ -835,6 +878,14 @@ export class AcpSessionManager {
               timeoutMs: turnTimeoutMs + ACP_TURN_TIMEOUT_GRACE_MS,
               timeoutLabelMs: turnTimeoutMs,
               onTimeout: async () => {
+                capture?.appendTrafficEvent({
+                  direction: "response_timeout",
+                  transport: "acp_runtime",
+                  backend: handle?.backend,
+                  session_key: sessionKey,
+                  request_id: input.requestId,
+                  timeout_ms: turnTimeoutMs,
+                });
                 eventGate.open = false;
                 skipPostTurnCleanup = true;
                 if (!activeTurn) {
@@ -880,6 +931,15 @@ export class AcpSessionManager {
               fallbackMessage: activeTurnStarted
                 ? "ACP turn failed before completion."
                 : "Could not initialize ACP session runtime.",
+            });
+            capture?.appendTrafficEvent({
+              direction: "response_error",
+              transport: "acp_runtime",
+              backend: handle?.backend,
+              session_key: sessionKey,
+              request_id: input.requestId,
+              code: acpError.code,
+              message: acpError.message,
             });
             retryFreshHandle = await this.prepareFreshHandleRetry({
               attempt,

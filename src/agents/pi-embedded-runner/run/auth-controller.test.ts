@@ -5,6 +5,7 @@ import type { AuthProfileStore } from "../../auth-profiles.js";
 const mocks = vi.hoisted(() => ({
   prepareProviderRuntimeAuth: vi.fn(),
   getApiKeyForModel: vi.fn(),
+  startBackendCapture: vi.fn(),
 }));
 
 vi.mock("../../../plugins/provider-runtime.js", async () => {
@@ -24,6 +25,10 @@ vi.mock("../../model-auth.js", async () => {
     getApiKeyForModel: mocks.getApiKeyForModel,
   };
 });
+
+vi.mock("../../backend-capture.js", () => ({
+  startBackendCapture: mocks.startBackendCapture,
+}));
 
 import { createEmbeddedRunAuthController } from "./auth-controller.js";
 
@@ -49,6 +54,7 @@ describe("createEmbeddedRunAuthController", () => {
   beforeEach(() => {
     mocks.prepareProviderRuntimeAuth.mockReset();
     mocks.getApiKeyForModel.mockReset();
+    mocks.startBackendCapture.mockReset();
   });
 
   it("applies runtime request overrides on the first auth exchange", async () => {
@@ -209,6 +215,67 @@ describe("createEmbeddedRunAuthController", () => {
 
     await expect(controller.initializeAuthProfile()).rejects.toThrow(
       /runtime auth request overrides do not allow proxy or tls/i,
+    );
+  });
+
+  it("captures preflight failover when all profiles are in cooldown", async () => {
+    const appendOutput = vi.fn();
+    mocks.startBackendCapture.mockReturnValue({
+      id: "1",
+      appendOutput,
+      appendReasoning: vi.fn(),
+      appendTrafficEvent: vi.fn(),
+    });
+
+    const controller = createEmbeddedRunAuthController({
+      config: undefined,
+      agentDir: "/tmp/agent",
+      workspaceDir: "/tmp/workspace",
+      authStore: {
+        version: 1,
+        profiles: {},
+      } as AuthProfileStore,
+      authStorage: { setRuntimeApiKey: vi.fn() },
+      profileCandidates: [],
+      initialThinkLevel: "medium",
+      attemptedThinking: new Set(),
+      fallbackConfigured: true,
+      allowTransientCooldownProbe: false,
+      getProvider: () => "custom-openai",
+      getModelId: () => "test-model",
+      getRuntimeModel: () => createTestModel(),
+      setRuntimeModel: () => undefined,
+      getEffectiveModel: () => createTestModel(),
+      setEffectiveModel: () => undefined,
+      getApiKeyInfo: () => null as never,
+      setApiKeyInfo: () => undefined,
+      getLastProfileId: () => undefined,
+      setLastProfileId: () => undefined,
+      getRuntimeAuthState: () => null,
+      setRuntimeAuthState: () => undefined,
+      getRuntimeAuthRefreshCancelled: () => false,
+      setRuntimeAuthRefreshCancelled: () => undefined,
+      getProfileIndex: () => 0,
+      setProfileIndex: () => undefined,
+      setThinkLevel: () => undefined,
+      log: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+      },
+    });
+
+    await expect(controller.initializeAuthProfile()).rejects.toThrow(
+      /No available auth profile for custom-openai/,
+    );
+    expect(mocks.startBackendCapture).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "auth_profile_preflight",
+      }),
+    );
+    expect(appendOutput).toHaveBeenCalledWith(
+      "auth_profile_preflight_error",
+      expect.stringContaining('"reason":"unknown"'),
     );
   });
 });
